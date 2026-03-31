@@ -254,6 +254,7 @@ class Model(nn.Module):
         self.task = task or guess_model_task(cfg_dict)
         self.model = (model or self._smart_load("models"))(cfg_dict, verbose=verbose and RANK == -1)  # build models
         self.overrides["models"] = self.cfg
+        self.overrides["model"] = self.cfg
         self.overrides["task"] = self.task
 
         # Below added to allow export from YAMLs
@@ -296,6 +297,7 @@ class Model(nn.Module):
             self.task = task or guess_model_task(weights)
             self.ckpt_path = weights
         self.overrides["models"] = weights
+        self.overrides["model"] = weights
         self.overrides["task"] = self.task
         self.model_name = weights
 
@@ -792,7 +794,7 @@ class Model(nn.Module):
         custom = {
             # NOTE: handle the case when 'cfg' includes 'data'.
             "data": overrides.get("data") or DEFAULT_CFG_DICT["data"] or TASK2DATA[self.task],
-            "models": self.overrides["models"],
+            "model": self.overrides.get("model", self.overrides.get("models")),
             "task": self.task,
         }  # method defaults
         args = {**overrides, **custom, **kwargs, "mode": "train"}  # highest priority args on the right
@@ -1172,4 +1174,10 @@ class Model(nn.Module):
             >>> print(models.stride)
             >>> print(models.task)
         """
-        return self._modules["models"] if name == "models" else getattr(self.model, name)
+        if name == "models":
+            name = "model"
+        try:
+            return nn.Module.__getattr__(self, name)
+        except AttributeError:
+            model = nn.Module.__getattr__(self, "model")
+            return getattr(model, name)

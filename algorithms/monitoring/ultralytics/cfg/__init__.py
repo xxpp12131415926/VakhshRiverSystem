@@ -297,10 +297,16 @@ def get_cfg(cfg: Union[str, Path, Dict, SimpleNamespace] = DEFAULT_CFG_DICT, ove
         - The function performs type and value checks on the configuration data.
     """
     cfg = cfg2dict(cfg)
+    # Compatibility: allow legacy/local key 'models' to map to official key 'model'.
+    if "models" in cfg and "model" not in cfg:
+        cfg["model"] = cfg["models"]
 
     # Merge overrides
     if overrides:
         overrides = cfg2dict(overrides)
+        if "models" in overrides and "model" not in overrides:
+            overrides["model"] = overrides["models"]
+        overrides.pop("models", None)
         if "save_dir" not in cfg:
             overrides.pop("save_dir", None)  # special override keys to ignore
         check_dict_alignment(cfg, overrides)
@@ -311,7 +317,7 @@ def get_cfg(cfg: Union[str, Path, Dict, SimpleNamespace] = DEFAULT_CFG_DICT, ove
         if k in cfg and isinstance(cfg[k], (int, float)):
             cfg[k] = str(cfg[k])
     if cfg.get("name") == "models":  # assign models to 'name' arg
-        cfg["name"] = str(cfg.get("models", "")).split(".")[0]
+        cfg["name"] = str(cfg.get("model", cfg.get("models", ""))).split(".")[0]
         LOGGER.warning(f"WARNING ⚠️ 'name=models' automatically updated to 'name={cfg['name']}'.")
 
     # Type and Value checks

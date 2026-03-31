@@ -915,7 +915,7 @@ def torch_safe_load(weight, safe_only=False):
             f"WARNING ⚠️ The file '{weight}' appears to be improperly saved or formatted. "
             f"For optimal results, use models.save('filename.pt') to correctly save YOLO models."
         )
-        ckpt = {"models": ckpt.model}
+        ckpt = {"model": ckpt.model}
 
     return ckpt, file
 
@@ -926,7 +926,10 @@ def attempt_load_weights(weights, device=None, inplace=True, fuse=False):
     for w in weights if isinstance(weights, list) else [weights]:
         ckpt, w = torch_safe_load(w)  # load ckpt
         args = {**DEFAULT_CFG_DICT, **ckpt["train_args"]} if "train_args" in ckpt else None  # combined args
-        model = (ckpt.get("ema") or ckpt["models"]).to(device).float()  # FP32 models
+        model = (ckpt.get("ema") or ckpt.get("model") or ckpt.get("models"))
+        if model is None:
+            raise KeyError("模型权重文件缺少 'model'/'models' 键")
+        model = model.to(device).float()  # FP32 models
 
         # Model compatibility updates
         model.args = args  # attach args to models
@@ -962,7 +965,10 @@ def attempt_load_one_weight(weight, device=None, inplace=True, fuse=False):
     """Loads a single models weights."""
     ckpt, weight = torch_safe_load(weight)  # load ckpt
     args = {**DEFAULT_CFG_DICT, **(ckpt.get("train_args", {}))}  # combine models and default args, preferring models args
-    model = (ckpt.get("ema") or ckpt["models"]).to(device).float()  # FP32 models
+    model = (ckpt.get("ema") or ckpt.get("model") or ckpt.get("models"))
+    if model is None:
+        raise KeyError("模型权重文件缺少 'model'/'models' 键")
+    model = model.to(device).float()  # FP32 models
 
     # Model compatibility updates
     model.args = {k: v for k, v in args.items() if k in DEFAULT_CFG_KEYS}  # attach args to models

@@ -7,6 +7,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
 MONITORING_DIR = os.path.join(PROJECT_ROOT, "algorithms", "monitoring")
 
 if MONITORING_DIR not in sys.path:
+    # Use project's customized ultralytics before site-packages.
     sys.path.insert(0, MONITORING_DIR)
 import datetime
 import matplotlib.pyplot as plt
@@ -630,6 +631,8 @@ class MonitoringWidget(QWidget):
 
             self.level_log("Step 1: 运行分割模型")
             seg_path = predict_seg.run_segmentation(fname)
+            if not seg_path or not os.path.exists(seg_path):
+                raise RuntimeError("分割失败：未生成有效输出图像。")
             self.update_image(self.lbl_seg, seg_path)
             seg_conf, _ = self.parse_yolo_conf(seg_path, 'segment')
             self.lbl_seg_conf.setText(f"置信度: {seg_conf:.4f}")
@@ -637,12 +640,18 @@ class MonitoringWidget(QWidget):
 
             self.level_log("Step 2: 图像预处理流水线")
             p_str, p_enh, p_den = preprocessor.run_preprocessing_pipeline(seg_path)
+            if not p_den or not os.path.exists(p_den):
+                raise RuntimeError("预处理失败：未生成去噪结果图像。")
             self.update_image(self.lbl_straight, p_str)
             self.update_image(self.lbl_enhance, p_enh)
             self.update_image(self.lbl_denoise, p_den)
 
             self.level_log("Step 3: 刻度数字识别")
             det_img, label_txt = predict_number.run_number_detection(p_den)
+            if not det_img or not os.path.exists(det_img):
+                raise RuntimeError("数字识别失败：未生成检测结果图像。")
+            if not label_txt or not os.path.exists(label_txt):
+                raise RuntimeError("数字识别失败：未生成标签文件。")
             self.update_image(self.lbl_detect, det_img)
 
             self.level_log("Step 4: 水位几何计算")
@@ -704,6 +713,9 @@ class MonitoringWidget(QWidget):
             self.level_log("所有任务执行完毕")
         except Exception as e:
             self.level_log(f"Error: {e}")
+            import traceback
+            print(traceback.format_exc())
+            QMessageBox.critical(self, "错误", str(e))
 
     def save_level_data(self):
         if self.current_water_level is not None:
