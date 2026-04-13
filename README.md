@@ -27,6 +27,7 @@ VakhshRiverSystem/
 │  ├─ reservoir_estimation/           # 库区水量估算
 │  ├─ routing/                        # 洪水演进与汇流
 │  ├─ segformer_service/              # SegFormer推理服务（水体/积雪识别）
+│  ├─ snow_state/                     # 积雪状态识别（GEE）
 │  ├─ swe/                            # 雪水当量估算
 │  ├─ warning/                        # 洪水预警监控
 │  ├─ water_allocation/               # 水资源分配优化
@@ -45,6 +46,7 @@ VakhshRiverSystem/
 │  ├─ reservoir_estimation_plugin/
 │  ├─ routing_plugin/
 │  ├─ segformer_plugin/
+│  ├─ snow_state_plugin/
 │  ├─ swe_plugin/
 │  ├─ warning_plugin/
 │  ├─ water_allocation_plugin/
@@ -165,6 +167,23 @@ algorithms/segformer_service/
 - 独立 Python 环境
 - GPU 推理
 - 通过 subprocess 调用
+
+---
+
+## 5. GEE 云端识别层
+
+新增的积雪状态识别模块采用“插件界面 + 算法封装 + GEE 云端导出”的接入方式：
+
+```
+plugins/snow_state_plugin/
+algorithms/snow_state/
+```
+
+其中：
+
+- 插件层负责日期、区域、数据源和导出参数录入
+- 算法层负责 Earth Engine 初始化、积雪状态计算和导出任务提交
+- 结果以 1-4 类积雪状态 GeoTIFF 导出到 Google Drive
 
 ---
 
@@ -289,7 +308,30 @@ algorithms/segformer_service/
 
 ---
 
-## 6 雪水当量估算
+## 6 积雪状态识别
+
+插件目录：
+
+```
+plugins/snow_state_plugin/
+```
+
+算法目录：
+
+```
+algorithms/snow_state/
+```
+
+功能：
+
+- 基于 GEE 的积雪物理状态识别
+- 融合 Sentinel-1、Sentinel-2、MODIS 与 DEM 数据
+- 支持 Google Drive 导出 GeoTIFF 结果
+- 支持替换默认遥感数据源 ID
+
+---
+
+## 7 雪水当量估算
 
 插件目录：
 
@@ -310,7 +352,7 @@ algorithms/swe/
 
 ---
 
-## 7 淹没区监测
+## 8 淹没区监测
 
 插件目录：
 
@@ -332,7 +374,7 @@ algorithms/inundation_monitoring/
 
 ---
 
-## 8 水资源分配
+## 9 水资源分配
 
 插件目录：
 
@@ -355,7 +397,7 @@ algorithms/water_allocation/
 
 ---
 
-## 9 洪水预警监控
+## 10 洪水预警监控
 
 插件目录：
 
@@ -386,6 +428,7 @@ algorithms/warning/
 - numpy
 - pandas
 - matplotlib
+- earthengine-api
 - rasterio
 - opencv-python
 - torch
@@ -394,7 +437,7 @@ algorithms/warning/
 安装示例：
 
 ```
-pip install pyqt5 numpy pandas matplotlib rasterio opencv-python torch pymoo
+pip install pyqt5 numpy pandas matplotlib earthengine-api rasterio opencv-python torch pymoo
 ```
 
 ---
