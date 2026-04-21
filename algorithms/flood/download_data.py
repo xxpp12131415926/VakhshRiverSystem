@@ -9,18 +9,22 @@ import os
 import zipfile
 import requests
 import geopandas as gpd
+from datetime import date, datetime, timedelta
+from urllib.parse import urlencode
 
 
 # -------------------------
 # Config
 # -------------------------
-CFG = {
-    "study_area_shp": "study_area.shp",
-    "dem_tif": "dem.tif",
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    "data_dir": "data",
-    "raw_dir": "data/raw",
-    "proc_dir": "data/processed",
+CFG = {
+    "study_area_shp": os.path.join(BASE_DIR, "study_area.shp"),
+    "dem_tif": os.path.join(BASE_DIR, "dem.tif"),
+
+    "data_dir": os.path.join(BASE_DIR, "data"),
+    "raw_dir": os.path.join(BASE_DIR, "data", "raw"),
+    "proc_dir": os.path.join(BASE_DIR, "data", "processed"),
 
     # Your bbox (EPSG:4326)
     "north": 39.861329,
@@ -32,6 +36,11 @@ CFG = {
     "era5_year": "2018",
     "era5_month": "10",
 }
+
+GFS_NOMADS_FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
+GFS_NOMADS_PUB_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
+GFS_DAY_RUN_CYCLE = "00"
+GFS_DAY_FORECAST_HOUR = 24
 
 # 用 os.makedirs 创建 raw（存放原始下载数据）和 processed（存放对齐后的数据）文件夹。
 os.makedirs(CFG["raw_dir"], exist_ok=True)
@@ -328,6 +337,305 @@ def match_daily_era5_to_dem_grid(rain_raw_files, soil_raw_files, dem_tif, out_di
         outputs["soil_daily_files"].append(out_path)
 
     return outputs
+
+
+def _parse_target_date(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y_%m_%d"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+    raise ValueError(f"Could not parse target date: {value!r}")
+
+
+def _first_existing_path(paths):
+    for path in paths:
+        if path and os.path.exists(path):
+            return os.path.abspath(path)
+    return None
+
+
+def _resolve_study_area_path(cfg):
+    study_area_path = _first_existing_path(
+        [
+            cfg.get("study_area_shp"),
+            CFG["study_area_shp"],
+            os.path.join(BASE_DIR, "study_area.shp"),
+        ]
+    )
+    if study_area_path is None:
+        raise FileNotFoundError("未找到研究区边界 study_area.shp，无法计算近实时数据下载范围。")
+    return study_area_path
+
+
+def _resolve_dem_clip_path(cfg):
+    proc_dir = os.path.abspath(cfg.get("proc_dir", CFG["proc_dir"]))
+    dem_path = _first_existing_path(
+        [
+            cfg.get("dem_path"),
+            os.path.join(proc_dir, "dem_clip.tif"),
+            os.path.join(CFG["proc_dir"], "dem_clip.tif"),
+            os.path.join(BASE_DIR, "dem_clip.tif"),
+        ]
+    )
+    if dem_path is None:
+        raise FileNotFoundError("缺少 DEM 裁剪栅格 dem_clip.tif，无法对近实时气象数据进行网格对齐。")
+    return dem_path
+
+
+def _resolve_bbox(cfg):
+    keys = ("north", "south", "west", "east")
+    if all(key in cfg for key in keys):
+        return {key: float(cfg[key]) for key in keys}
+
+    study_area_path = _resolve_study_area_path(cfg)
+    study = gpd.read_file(study_area_path).to_crs(4326)
+    west, south, east, north = study.total_bounds
+    return {
+        "north": float(north),
+        "south": float(south),
+        "west": float(west),
+        "east": float(east),
+    }
+
+
+def _latest_completed_local_day(today=None):
+    if today is None:
+        today = datetime.now().date()
+    return today - timedelta(days=1)
+
+
+def _gfs_day_dir(target_day):
+    return f"/gfs.{target_day.strftime('%Y%m%d')}/{GFS_DAY_RUN_CYCLE}/atmos"
+
+
+def _gfs_day_file_name():
+    return f"gfs.t{GFS_DAY_RUN_CYCLE}z.pgrb2.0p25.f{GFS_DAY_FORECAST_HOUR:03d}"
+
+
+def _gfs_public_idx_url(target_day):
+    return (
+        f"{GFS_NOMADS_PUB_ROOT}/gfs.{target_day.strftime('%Y%m%d')}/"
+        f"{GFS_DAY_RUN_CYCLE}/atmos/{_gfs_day_file_name()}.idx"
+    )
+
+
+def _gfs_filter_url(target_day, bbox, level_param, variable_param):
+    params = {
+        "file": _gfs_day_file_name(),
+        level_param: "on",
+        variable_param: "on",
+        "subregion": "",
+        "leftlon": f"{bbox['west']:.6f}",
+        "rightlon": f"{bbox['east']:.6f}",
+        "toplat": f"{bbox['north']:.6f}",
+        "bottomlat": f"{bbox['south']:.6f}",
+        "dir": _gfs_day_dir(target_day),
+    }
+    return f"{GFS_NOMADS_FILTER_URL}?{urlencode(params)}"
+
+
+def _download_binary(url, out_path, timeout=180, session=None):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    tmp_path = out_path + ".part"
+    client = session or requests
+
+    try:
+        with client.get(url, stream=True, timeout=timeout) as response:
+            response.raise_for_status()
+            with open(tmp_path, "wb") as dst:
+                for chunk in response.iter_content(1024 * 64):
+                    if chunk:
+                        dst.write(chunk)
+        if os.path.getsize(tmp_path) == 0:
+            raise RuntimeError(f"Downloaded empty file from: {url}")
+        os.replace(tmp_path, out_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+    return out_path
+
+
+def _ensure_grib_payload(path, label):
+    with open(path, "rb") as src:
+        prefix = src.read(4)
+        if prefix == b"GRIB":
+            return
+        src.seek(0)
+        snippet = src.read(200).decode("utf-8", errors="ignore")
+    raise RuntimeError(
+        f"{label} 下载失败，数据源返回的不是有效的 GRIB 文件。"
+        f"{(' 服务器返回片段: ' + snippet.strip()) if snippet.strip() else ''}"
+    )
+
+
+def _locate_grib_band(path, element_prefix=None, comment_contains=None, short_name_contains=None):
+    with rasterio.open(path) as src:
+        matches = []
+        for band_index in range(1, src.count + 1):
+            tags = src.tags(band_index)
+            element = tags.get("GRIB_ELEMENT", "")
+            comment = tags.get("GRIB_COMMENT", "")
+            short_name = tags.get("GRIB_SHORT_NAME", "")
+
+            if element_prefix and not element.startswith(element_prefix):
+                continue
+            if comment_contains and comment_contains.lower() not in comment.lower():
+                continue
+            if short_name_contains and short_name_contains.lower() not in short_name.lower():
+                continue
+            matches.append(band_index)
+
+    if matches:
+        return matches[0]
+    raise RuntimeError(f"Could not find expected GRIB band in {path}")
+
+
+def _grib_band_to_tif(src_grib, out_tif, band_index):
+    os.makedirs(os.path.dirname(out_tif), exist_ok=True)
+
+    with rasterio.open(src_grib) as src:
+        arr = src.read(band_index).astype(np.float32)
+        nodata = src.nodata
+        if nodata is not None and np.isfinite(nodata):
+            arr[arr == nodata] = np.nan
+
+        profile = {
+            "driver": "GTiff",
+            "height": src.height,
+            "width": src.width,
+            "count": 1,
+            "dtype": "float32",
+            "crs": src.crs,
+            "transform": src.transform,
+            "nodata": np.nan,
+            "compress": "LZW",
+        }
+
+    with rasterio.open(out_tif, "w", **profile) as dst:
+        dst.write(arr, 1)
+
+    return out_tif
+
+
+def download_gfs_daily_inputs(target_date=None, cfg=None, force=False, session=None, today=None):
+    """Download near-real-time daily rain and soil moisture from NOAA GFS.
+
+    Output file names stay compatible with the flood input resolver:
+      - rain_mm_demgrid_YYYY-MM-DD.tif
+      - soil_moist_demgrid_YYYY-MM-DD.tif
+    """
+    cfg = cfg or CFG
+    target_day = _parse_target_date(target_date) or _latest_completed_local_day(today=today)
+    latest_complete_day = _latest_completed_local_day(today=today)
+
+    if target_day > latest_complete_day:
+        raise FileNotFoundError(
+            f"近实时数据源当前只支持截至 {latest_complete_day.isoformat()} 的完整逐日数据，"
+            f"{target_day.isoformat()} 还没有可用的完整日尺度结果。"
+        )
+
+    proc_dir = os.path.abspath(cfg.get("proc_dir", CFG["proc_dir"]))
+    raw_dir = os.path.abspath(cfg.get("raw_dir", CFG["raw_dir"]))
+    raw_gfs_dir = os.path.join(raw_dir, "daily_gfs")
+    raw_tif_dir = os.path.join(raw_dir, "daily_gfs_tif")
+    proc_daily_dir = os.path.join(proc_dir, "daily")
+
+    os.makedirs(raw_gfs_dir, exist_ok=True)
+    os.makedirs(raw_tif_dir, exist_ok=True)
+    os.makedirs(proc_daily_dir, exist_ok=True)
+
+    date_token = target_day.isoformat()
+    rain_proc_path = os.path.join(proc_daily_dir, f"rain_mm_demgrid_{date_token}.tif")
+    soil_proc_path = os.path.join(proc_daily_dir, f"soil_moist_demgrid_{date_token}.tif")
+
+    if not force and os.path.exists(rain_proc_path) and os.path.exists(soil_proc_path):
+        return {
+            "target_date": date_token,
+            "rain_path": rain_proc_path,
+            "soil_path": soil_proc_path,
+            "source": "gfs-nomads",
+            "actions": [],
+        }
+
+    dem_tif = _resolve_dem_clip_path(cfg)
+    bbox = _resolve_bbox(cfg)
+    created_session = session is None
+    client = session or requests.Session()
+
+    try:
+        idx_url = _gfs_public_idx_url(target_day)
+        idx_response = client.get(idx_url, timeout=30)
+        if not idx_response.ok:
+            raise FileNotFoundError(
+                f"近实时数据源暂未提供 {date_token} 的 GFS 日尺度文件，"
+                "可能该日期已超出在线保留范围，或服务尚未同步完成。"
+            )
+
+        rain_grib_path = os.path.join(raw_gfs_dir, f"gfs_apcp24_{date_token}.grib2")
+        soil_grib_path = os.path.join(raw_gfs_dir, f"gfs_soilw_0_0.1m_{date_token}.grib2")
+        rain_raw_tif = os.path.join(raw_tif_dir, f"gfs_apcp24_mm_{date_token}.tif")
+        soil_raw_tif = os.path.join(raw_tif_dir, f"gfs_soilw_0_0.1m_{date_token}.tif")
+
+        rain_url = _gfs_filter_url(target_day, bbox, "lev_surface", "var_APCP")
+        soil_url = _gfs_filter_url(target_day, bbox, "lev_0-0.1_m_below_ground", "var_SOILW")
+
+        actions = []
+
+        if force or not os.path.exists(rain_grib_path):
+            _download_binary(rain_url, rain_grib_path, session=client)
+            _ensure_grib_payload(rain_grib_path, f"{date_token} 降水")
+            actions.append(f"已从 NOAA GFS 获取 {date_token} 的逐日降水数据。")
+
+        if force or not os.path.exists(soil_grib_path):
+            _download_binary(soil_url, soil_grib_path, session=client)
+            _ensure_grib_payload(soil_grib_path, f"{date_token} 土壤湿度")
+            actions.append(f"已从 NOAA GFS 获取 {date_token} 的表层土壤湿度数据。")
+
+        if force or not os.path.exists(rain_raw_tif):
+            rain_band = _locate_grib_band(
+                rain_grib_path,
+                element_prefix="APCP24",
+                comment_contains="24 hr Total precipitation",
+            )
+            _grib_band_to_tif(rain_grib_path, rain_raw_tif, rain_band)
+
+        if force or not os.path.exists(soil_raw_tif):
+            soil_band = _locate_grib_band(
+                soil_grib_path,
+                element_prefix="SOILW",
+                short_name_contains="0-0.1",
+            )
+            _grib_band_to_tif(soil_grib_path, soil_raw_tif, soil_band)
+
+        if force or not os.path.exists(rain_proc_path):
+            match_dem_grid(rain_raw_tif, dem_tif, rain_proc_path, resampling=Resampling.bilinear)
+            actions.append(f"已生成 {date_token} 的 DEM 网格降水栅格。")
+
+        if force or not os.path.exists(soil_proc_path):
+            match_dem_grid(soil_raw_tif, dem_tif, soil_proc_path, resampling=Resampling.bilinear)
+            actions.append(f"已生成 {date_token} 的 DEM 网格土壤湿度栅格。")
+    finally:
+        if created_session:
+            client.close()
+
+    return {
+        "target_date": date_token,
+        "rain_path": rain_proc_path,
+        "soil_path": soil_proc_path,
+        "source": "gfs-nomads",
+        "actions": actions,
+    }
 
 
 def download_worldcover_to_demgrid(dem_tif, out_tif):

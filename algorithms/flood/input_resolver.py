@@ -248,10 +248,30 @@ def resolve_static_inputs(cfg: dict, auto_prepare: bool = True) -> dict:
     return resolved
 
 
+def _prepare_missing_dynamic_inputs(cfg: dict, target_date: Optional[date]) -> list[str]:
+    try:
+        try:
+            from . import download_data
+        except ImportError:
+            import download_data  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("逐日气象数据缺失，且无法加载自动下载模块。") from exc
+
+    try:
+        result = download_data.download_gfs_daily_inputs(target_date=target_date, cfg=cfg)
+    except FileNotFoundError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("系统尝试自动获取近实时逐日气象数据时失败，请稍后重试或检查网络连接。") from exc
+
+    return result.get("actions", [])
+
+
 def resolve_dynamic_inputs(
     cfg: dict,
     target_date: Optional[object] = None,
     allow_legacy_dynamic: bool = True,
+    auto_prepare: bool = True,
 ) -> dict:
     proc_dir = cfg["proc_dir"]
     requested_date = parse_target_date(target_date)
@@ -261,21 +281,31 @@ def resolve_dynamic_inputs(
     }
     legacy_available = all(os.path.exists(path) for path in legacy_paths.values())
 
-    rain_candidates = _discover_daily_candidates(proc_dir, "rain")
-    soil_candidates = _discover_daily_candidates(proc_dir, "soil_moist")
-    available_dates = sorted(set(rain_candidates).intersection(soil_candidates))
+    dynamic_actions: list[str] = []
+
+    def _scan_daily_inputs():
+        rain = _discover_daily_candidates(proc_dir, "rain")
+        soil = _discover_daily_candidates(proc_dir, "soil_moist")
+        dates = sorted(set(rain).intersection(soil))
+        return rain, soil, dates
+
+    rain_candidates, soil_candidates, available_dates = _scan_daily_inputs()
+
+    if requested_date is not None and requested_date not in available_dates and auto_prepare:
+        dynamic_actions = _prepare_missing_dynamic_inputs(cfg, requested_date)
+        rain_candidates, soil_candidates, available_dates = _scan_daily_inputs()
+    elif requested_date is None and not available_dates and auto_prepare:
+        dynamic_actions = _prepare_missing_dynamic_inputs(cfg, None)
+        rain_candidates, soil_candidates, available_dates = _scan_daily_inputs()
 
     if requested_date is not None:
         if requested_date not in available_dates:
-            if not available_dates and allow_legacy_dynamic and legacy_available:
-                return {
-                    "rain_path": legacy_paths["rain"],
-                    "soil_path": legacy_paths["soil_moist"],
-                    "requested_target_date": requested_date.isoformat(),
-                    "resolved_target_date": None,
-                    "dynamic_scale": "legacy-monthly",
-                    "available_dynamic_dates": [],
-                }
+            if not available_dates and legacy_available:
+                raise FileNotFoundError(
+                    f"No daily dynamic inputs found for {requested_date.isoformat()}. "
+                    "Only legacy monthly files are available, and monthly fallback is disabled "
+                    "when a specific date is selected."
+                )
             available_text = _format_date_list(available_dates)
             raise FileNotFoundError(
                 f"未找到 {requested_date.isoformat()} 的逐日气象输入。"
@@ -289,6 +319,7 @@ def resolve_dynamic_inputs(
             "resolved_target_date": requested_date.isoformat(),
             "dynamic_scale": "daily",
             "available_dynamic_dates": [item.isoformat() for item in available_dates],
+            "dynamic_actions": dynamic_actions,
         }
 
     if available_dates:
@@ -300,6 +331,7 @@ def resolve_dynamic_inputs(
             "resolved_target_date": resolved_date.isoformat(),
             "dynamic_scale": "daily",
             "available_dynamic_dates": [item.isoformat() for item in available_dates],
+            "dynamic_actions": dynamic_actions,
         }
 
     if allow_legacy_dynamic and legacy_available:
@@ -310,6 +342,7 @@ def resolve_dynamic_inputs(
             "resolved_target_date": None,
             "dynamic_scale": "legacy-monthly",
             "available_dynamic_dates": [],
+            "dynamic_actions": dynamic_actions,
         }
 
     raise FileNotFoundError(
@@ -323,6 +356,7 @@ def resolve_flood_input_paths(
     target_date: Optional[object] = None,
     auto_prepare_static: bool = True,
     allow_legacy_dynamic: bool = True,
+    auto_prepare_dynamic: bool = True,
 ) -> dict:
     resolved = {}
     resolved.update(resolve_static_inputs(cfg, auto_prepare=auto_prepare_static))
@@ -331,6 +365,7 @@ def resolve_flood_input_paths(
             cfg,
             target_date=target_date,
             allow_legacy_dynamic=allow_legacy_dynamic,
+            auto_prepare=auto_prepare_dynamic,
         )
     )
     return resolved

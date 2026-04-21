@@ -6,6 +6,18 @@ This project is configured to run with the conda environment:
 
 ## Quick Start
 
+In Codex app, run the current branch from the current worktree root with:
+
+```powershell
+.\run_app.bat
+```
+
+This launches:
+
+`C:\Users\TGQ\.codex\worktrees\0c9b\VakhshRiverSystem\main.py`
+
+So what you see is the effect of the current branch/worktree changes, not the original project folder on `E:`.
+
 Double-click:
 
 `run_app.bat`

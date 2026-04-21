@@ -279,12 +279,18 @@ def build_folium_map(risk, dem_path, study_area_shp, out_map):
     m.save(out_map)
 
 
-def run_risk_assessment(target_date=None, auto_prepare_static=True, allow_legacy_dynamic=True):
+def run_risk_assessment(
+    target_date=None,
+    auto_prepare_static=True,
+    allow_legacy_dynamic=True,
+    auto_prepare_dynamic=True,
+):
     input_paths = resolve_flood_input_paths(
         CFG,
         target_date=target_date,
         auto_prepare_static=auto_prepare_static,
         allow_legacy_dynamic=allow_legacy_dynamic,
+        auto_prepare_dynamic=auto_prepare_dynamic,
     )
 
     dem_path = input_paths["dem_path"]
@@ -392,6 +398,7 @@ def run_risk_assessment(target_date=None, auto_prepare_static=True, allow_legacy
         "dynamic_scale": input_paths["dynamic_scale"],
         "available_dynamic_dates": input_paths["available_dynamic_dates"],
         "static_actions": input_paths.get("static_actions", []),
+        "dynamic_actions": input_paths.get("dynamic_actions", []),
     }
 
 
