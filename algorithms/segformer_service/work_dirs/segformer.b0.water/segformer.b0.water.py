@@ -19,8 +19,10 @@ model = dict(
             type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0)),
     train_cfg=dict(),
     test_cfg=dict(mode='slide', crop_size=(1024, 1024), stride=(768, 768)))
-dataset_type = 'CustomDataset'
+dataset_type = 'WaterDataset'
 data_root = './data/water'
+classes = ('background', 'water')
+palette = [[0, 0, 0], [255, 255, 255]]
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 crop_size = (1024, 1024)
@@ -62,12 +64,14 @@ data = dict(
     samples_per_gpu=1,
     workers_per_gpu=2,
     train=dict(
-        type='CustomDataset',
+        type='WaterDataset',
         data_root='./data/water',
         img_dir='images_png/train',
         ann_dir='masks_png/train',
-        img_suffix='.png',
-        seg_map_suffix='.png',
+        img_suffix='.jpg',
+        seg_map_suffix='.jpg',
+        classes=('background', 'water'),
+        palette=[[0, 0, 0], [255, 255, 255]],
         pipeline=[
             dict(type='LoadImageFromFile'),
             dict(type='LoadAnnotations'),
@@ -87,12 +91,14 @@ data = dict(
             dict(type='Collect', keys=['img', 'gt_semantic_seg'])
         ]),
     val=dict(
-        type='CustomDataset',
+        type='WaterDataset',
         data_root='./data/water',
         img_dir='images_png/val',
         ann_dir='masks_png/val',
-        img_suffix='.png',
-        seg_map_suffix='.png',
+        img_suffix='.jpg',
+        seg_map_suffix='.jpg',
+        classes=('background', 'water'),
+        palette=[[0, 0, 0], [255, 255, 255]],
         pipeline=[
             dict(type='LoadImageFromFile'),
             dict(
@@ -112,12 +118,14 @@ data = dict(
                 ])
         ]),
     test=dict(
-        type='CustomDataset',
+        type='WaterDataset',
         data_root='./data/water',
         img_dir='images_png/val',
         ann_dir='masks_png/val',
-        img_suffix='.png',
-        seg_map_suffix='.png',
+        img_suffix='.jpg',
+        seg_map_suffix='.jpg',
+        classes=('background', 'water'),
+        palette=[[0, 0, 0], [255, 255, 255]],
         pipeline=[
             dict(type='LoadImageFromFile'),
             dict(
